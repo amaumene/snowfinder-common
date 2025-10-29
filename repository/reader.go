@@ -43,6 +43,31 @@ func (r *ReaderRepository) GetResortBySlug(ctx context.Context, slug string) (*m
 	return &resort, nil
 }
 
+func (r *ReaderRepository) GetResortByID(ctx context.Context, id string) (*models.Resort, error) {
+	query := `
+		SELECT id, slug, name, prefecture, region,
+			   top_elevation_m, base_elevation_m, vertical_m,
+			   num_courses, longest_course_km, steepest_course_deg,
+			   last_updated
+		FROM resorts
+		WHERE id = $1
+	`
+
+	var resort models.Resort
+	err := r.db.QueryRow(ctx, query, id).Scan(
+		&resort.ID, &resort.Slug, &resort.Name, &resort.Prefecture, &resort.Region,
+		&resort.TopElevationM, &resort.BaseElevationM, &resort.VerticalM,
+		&resort.NumCourses, &resort.LongestCourseKM, &resort.SteepestCourseDeg,
+		&resort.LastUpdated,
+	)
+
+	if err != nil {
+		return nil, fmt.Errorf("get resort by id: %w", err)
+	}
+
+	return &resort, nil
+}
+
 func (r *ReaderRepository) GetSnowiestResortsForWeek(ctx context.Context, weekStart string, limit int) ([]models.WeeklyResortStats, error) {
 	query := `
 		WITH weekly_data AS (
@@ -270,4 +295,81 @@ func (r *ReaderRepository) GetSnowiestResortsForDateRangeByPrefecture(ctx contex
 	}
 
 	return results, nil
+}
+
+func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models.ResortWithPeaks, error) {
+	// First, get all resorts that have peak periods
+	resortsQuery := `
+		SELECT DISTINCT r.id, r.slug, r.name, r.prefecture, r.region,
+			   r.top_elevation_m, r.base_elevation_m, r.vertical_m,
+			   r.num_courses, r.longest_course_km, r.steepest_course_deg,
+			   r.last_updated
+		FROM resorts r
+		INNER JOIN resort_peak_periods p ON r.id = p.resort_id
+		ORDER BY r.prefecture, r.name
+	`
+
+	rows, err := r.db.Query(ctx, resortsQuery)
+	if err != nil {
+		return nil, fmt.Errorf("query resorts with peaks: %w", err)
+	}
+	defer rows.Close()
+
+	var results []models.ResortWithPeaks
+	for rows.Next() {
+		var resort models.Resort
+		if err := rows.Scan(
+			&resort.ID, &resort.Slug, &resort.Name, &resort.Prefecture, &resort.Region,
+			&resort.TopElevationM, &resort.BaseElevationM, &resort.VerticalM,
+			&resort.NumCourses, &resort.LongestCourseKM, &resort.SteepestCourseDeg,
+			&resort.LastUpdated,
+		); err != nil {
+			return nil, fmt.Errorf("scan resort: %w", err)
+		}
+
+		// Get peaks for this resort
+		peaks, err := r.GetPeakPeriodsForResort(ctx, resort.ID)
+		if err != nil {
+			return nil, fmt.Errorf("get peaks for resort %s: %w", resort.ID, err)
+		}
+
+		results = append(results, models.ResortWithPeaks{
+			Resort: resort,
+			Peaks:  peaks,
+		})
+	}
+
+	return results, nil
+}
+
+func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID string) ([]models.PeakPeriod, error) {
+	query := `
+		SELECT id, resort_id, peak_rank, start_date, end_date, center_date,
+			   avg_daily_snowfall, total_period_snowfall, prominence_score,
+			   years_of_data, confidence_level, calculated_at
+		FROM resort_peak_periods
+		WHERE resort_id = $1
+		ORDER BY peak_rank
+	`
+
+	rows, err := r.db.Query(ctx, query, resortID)
+	if err != nil {
+		return nil, fmt.Errorf("query peak periods: %w", err)
+	}
+	defer rows.Close()
+
+	var peaks []models.PeakPeriod
+	for rows.Next() {
+		var peak models.PeakPeriod
+		if err := rows.Scan(
+			&peak.ID, &peak.ResortID, &peak.PeakRank, &peak.StartDate, &peak.EndDate, &peak.CenterDate,
+			&peak.AvgDailySnowfall, &peak.TotalPeriodSnowfall, &peak.ProminenceScore,
+			&peak.YearsOfData, &peak.ConfidenceLevel, &peak.CalculatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan peak period: %w", err)
+		}
+		peaks = append(peaks, peak)
+	}
+
+	return peaks, nil
 }

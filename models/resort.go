@@ -61,3 +61,23 @@ type WeeklyResortStats struct {
 	NumCourses      *int
 	LongestCourseKM *float64
 }
+
+type PeakPeriod struct {
+	ID                   string    `json:"id" db:"id"`
+	ResortID             string    `json:"resort_id" db:"resort_id"`
+	PeakRank             int       `json:"peak_rank" db:"peak_rank"`
+	StartDate            string    `json:"start_date" db:"start_date"`
+	EndDate              string    `json:"end_date" db:"end_date"`
+	CenterDate           string    `json:"center_date" db:"center_date"`
+	AvgDailySnowfall     float64   `json:"avg_daily_snowfall" db:"avg_daily_snowfall"`
+	TotalPeriodSnowfall  float64   `json:"total_period_snowfall" db:"total_period_snowfall"`
+	ProminenceScore      float64   `json:"prominence_score" db:"prominence_score"`
+	YearsOfData          int       `json:"years_of_data" db:"years_of_data"`
+	ConfidenceLevel      string    `json:"confidence_level" db:"confidence_level"`
+	CalculatedAt         time.Time `json:"calculated_at" db:"calculated_at"`
+}
+
+type ResortWithPeaks struct {
+	Resort Resort
+	Peaks  []PeakPeriod
+}
