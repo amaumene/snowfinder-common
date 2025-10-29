@@ -1,0 +1,1 @@
+# snowfinder-common
