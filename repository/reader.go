@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/amaumene/snowfinder-common/models"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ReaderRepository provides read-only database access.
@@ -93,7 +93,13 @@ func (r *ReaderRepository) GetSnowiestResortsForWeek(ctx context.Context, weekSt
 			r.id,
 			r.name,
 			r.prefecture,
-			ROUND(awd.avg_snowfall)::int as avg_snowfall
+			ROUND(awd.avg_snowfall)::int as avg_snowfall,
+			awd.years_with_data,
+			r.top_elevation_m,
+			r.base_elevation_m,
+			r.vertical_m,
+			r.num_courses,
+			r.longest_course_km
 		FROM avg_weekly_data awd
 		JOIN resorts r ON r.id = awd.resort_id
 		WHERE awd.years_with_data >= 1
@@ -110,7 +116,7 @@ func (r *ReaderRepository) GetSnowiestResortsForWeek(ctx context.Context, weekSt
 	var results []models.WeeklyResortStats
 	for rows.Next() {
 		var stat models.WeeklyResortStats
-		if err := rows.Scan(&stat.ResortID, &stat.Name, &stat.Prefecture, &stat.TotalSnowfall,
+		if err := rows.Scan(&stat.ResortID, &stat.Name, &stat.Prefecture, &stat.TotalSnowfall, &stat.YearsWithData,
 			&stat.TopElevationM, &stat.BaseElevationM, &stat.VerticalM, &stat.NumCourses, &stat.LongestCourseKM); err != nil {
 			return nil, fmt.Errorf("scan result: %w", err)
 		}
@@ -145,7 +151,13 @@ func (r *ReaderRepository) GetSnowiestResortsForWeekByPrefecture(ctx context.Con
 			r.id,
 			r.name,
 			r.prefecture,
-			ROUND(awd.avg_snowfall)::int as avg_snowfall
+			ROUND(awd.avg_snowfall)::int as avg_snowfall,
+			awd.years_with_data,
+			r.top_elevation_m,
+			r.base_elevation_m,
+			r.vertical_m,
+			r.num_courses,
+			r.longest_course_km
 		FROM avg_weekly_data awd
 		JOIN resorts r ON r.id = awd.resort_id
 		WHERE awd.years_with_data >= 1
@@ -163,7 +175,7 @@ func (r *ReaderRepository) GetSnowiestResortsForWeekByPrefecture(ctx context.Con
 	var results []models.WeeklyResortStats
 	for rows.Next() {
 		var stat models.WeeklyResortStats
-		if err := rows.Scan(&stat.ResortID, &stat.Name, &stat.Prefecture, &stat.TotalSnowfall,
+		if err := rows.Scan(&stat.ResortID, &stat.Name, &stat.Prefecture, &stat.TotalSnowfall, &stat.YearsWithData,
 			&stat.TopElevationM, &stat.BaseElevationM, &stat.VerticalM, &stat.NumCourses, &stat.LongestCourseKM); err != nil {
 			return nil, fmt.Errorf("scan result: %w", err)
 		}
