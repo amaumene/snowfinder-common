@@ -122,6 +122,9 @@ func (r *ReaderRepository) GetSnowiestResortsForWeek(ctx context.Context, weekSt
 		}
 		results = append(results, stat)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
 
 	return results, nil
 }
@@ -180,6 +183,9 @@ func (r *ReaderRepository) GetSnowiestResortsForWeekByPrefecture(ctx context.Con
 			return nil, fmt.Errorf("scan result: %w", err)
 		}
 		results = append(results, stat)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
 	}
 
 	return results, nil
@@ -243,6 +249,9 @@ func (r *ReaderRepository) GetSnowiestResortsForDateRange(ctx context.Context, s
 		}
 		results = append(results, stat)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
 
 	return results, nil
 }
@@ -305,6 +314,9 @@ func (r *ReaderRepository) GetSnowiestResortsForDateRangeByPrefecture(ctx contex
 		}
 		results = append(results, stat)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
 
 	return results, nil
 }
@@ -350,6 +362,9 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 			Peaks:  peaks,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
 
 	return results, nil
 }
@@ -381,6 +396,9 @@ func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID
 			return nil, fmt.Errorf("scan peak period: %w", err)
 		}
 		peaks = append(peaks, peak)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
 	}
 
 	return peaks, nil
