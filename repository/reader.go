@@ -76,9 +76,8 @@ func (r *ReaderRepository) GetSnowiestResortsForWeek(ctx context.Context, weekSt
 				EXTRACT(YEAR FROM date) as year,
 				SUM(snowfall_cm) as total_snowfall
 			FROM daily_snowfall
-			WHERE EXTRACT(MONTH FROM date) = EXTRACT(MONTH FROM $1::date)
-			  AND EXTRACT(DAY FROM date) BETWEEN EXTRACT(DAY FROM $1::date)
-			    AND EXTRACT(DAY FROM $1::date) + 6
+			WHERE TO_CHAR(date, 'MM-DD') >= TO_CHAR($1::date, 'MM-DD')
+			  AND TO_CHAR(date, 'MM-DD') <= TO_CHAR($1::date + INTERVAL '6 days', 'MM-DD')
 			GROUP BY resort_id, year
 		),
 		avg_weekly_data AS (
@@ -137,9 +136,8 @@ func (r *ReaderRepository) GetSnowiestResortsForWeekByPrefecture(ctx context.Con
 				EXTRACT(YEAR FROM date) as year,
 				SUM(snowfall_cm) as total_snowfall
 			FROM daily_snowfall
-			WHERE EXTRACT(MONTH FROM date) = EXTRACT(MONTH FROM $1::date)
-			  AND EXTRACT(DAY FROM date) BETWEEN EXTRACT(DAY FROM $1::date)
-			    AND EXTRACT(DAY FROM $1::date) + 6
+			WHERE TO_CHAR(date, 'MM-DD') >= TO_CHAR($1::date, 'MM-DD')
+			  AND TO_CHAR(date, 'MM-DD') <= TO_CHAR($1::date + INTERVAL '6 days', 'MM-DD')
 			GROUP BY resort_id, year
 		),
 		avg_weekly_data AS (
