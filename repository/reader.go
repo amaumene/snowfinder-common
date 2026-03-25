@@ -320,48 +320,62 @@ func (r *ReaderRepository) GetSnowiestResortsForDateRangeByPrefecture(ctx contex
 }
 
 func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models.ResortWithPeaks, error) {
-	// First, get all resorts that have peak periods
-	resortsQuery := `
-		SELECT DISTINCT r.id, r.slug, r.name, r.prefecture, r.region,
+	// Single JOIN query to fetch resorts and their peaks together
+	query := `
+		SELECT r.id, r.slug, r.name, r.prefecture, r.region,
 			   r.top_elevation_m, r.base_elevation_m, r.vertical_m,
 			   r.num_courses, r.longest_course_km, r.steepest_course_deg,
-			   r.last_updated
+			   r.last_updated,
+			   p.id, p.peak_rank, p.start_date, p.end_date, p.center_date,
+			   p.avg_daily_snowfall, p.total_period_snowfall, p.prominence_score,
+			   p.years_of_data, p.confidence_level, p.calculated_at
 		FROM resorts r
 		INNER JOIN resort_peak_periods p ON r.id = p.resort_id
-		ORDER BY r.prefecture, r.name
+		ORDER BY r.prefecture, r.name, p.peak_rank
 	`
 
-	rows, err := r.db.Query(ctx, resortsQuery)
+	rows, err := r.db.Query(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query resorts with peaks: %w", err)
 	}
 	defer rows.Close()
 
-	var results []models.ResortWithPeaks
+	resortMap := make(map[string]*models.ResortWithPeaks)
+	var order []string
+
 	for rows.Next() {
 		var resort models.Resort
+		var peak models.PeakPeriod
 		if err := rows.Scan(
 			&resort.ID, &resort.Slug, &resort.Name, &resort.Prefecture, &resort.Region,
 			&resort.TopElevationM, &resort.BaseElevationM, &resort.VerticalM,
 			&resort.NumCourses, &resort.LongestCourseKM, &resort.SteepestCourseDeg,
 			&resort.LastUpdated,
+			&peak.ID, &peak.PeakRank, &peak.StartDate, &peak.EndDate, &peak.CenterDate,
+			&peak.AvgDailySnowfall, &peak.TotalPeriodSnowfall, &peak.ProminenceScore,
+			&peak.YearsOfData, &peak.ConfidenceLevel, &peak.CalculatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scan resort: %w", err)
+			return nil, fmt.Errorf("scan resort with peak: %w", err)
 		}
 
-		// Get peaks for this resort
-		peaks, err := r.GetPeakPeriodsForResort(ctx, resort.ID)
-		if err != nil {
-			return nil, fmt.Errorf("get peaks for resort %s: %w", resort.ID, err)
-		}
+		peak.ResortID = resort.ID
 
-		results = append(results, models.ResortWithPeaks{
-			Resort: resort,
-			Peaks:  peaks,
-		})
+		if _, exists := resortMap[resort.ID]; !exists {
+			resortMap[resort.ID] = &models.ResortWithPeaks{
+				Resort: resort,
+				Peaks:  []models.PeakPeriod{},
+			}
+			order = append(order, resort.ID)
+		}
+		resortMap[resort.ID].Peaks = append(resortMap[resort.ID].Peaks, peak)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+
+	results := make([]models.ResortWithPeaks, 0, len(order))
+	for _, id := range order {
+		results = append(results, *resortMap[id])
 	}
 
 	return results, nil
