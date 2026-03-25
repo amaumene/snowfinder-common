@@ -41,16 +41,16 @@ type ResortURL struct {
 }
 
 type WeeklyResortStats struct {
-	ResortID        string
-	Name            string
-	Prefecture      string
-	TotalSnowfall   *int
-	YearsWithData   *int
-	TopElevationM   *int
-	BaseElevationM  *int
-	VerticalM       *int
-	NumCourses      *int
-	LongestCourseKM *float64
+	ResortID        string   `json:"resort_id"`
+	Name            string   `json:"name"`
+	Prefecture      string   `json:"prefecture"`
+	TotalSnowfall   *int     `json:"total_snowfall"`
+	YearsWithData   *int     `json:"years_with_data"`
+	TopElevationM   *int     `json:"top_elevation_m"`
+	BaseElevationM  *int     `json:"base_elevation_m"`
+	VerticalM       *int     `json:"vertical_m"`
+	NumCourses      *int     `json:"num_courses"`
+	LongestCourseKM *float64 `json:"longest_course_km"`
 }
 
 type PeakPeriod struct {
