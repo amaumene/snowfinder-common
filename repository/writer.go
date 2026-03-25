@@ -4,23 +4,21 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/amaumene/snowfinder-common/models"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/amaumene/snowfinder-common/models"
 )
 
 // WriterRepository provides full read-write database access.
 type WriterRepository struct {
 	*ReaderRepository
-	db *pgxpool.Pool
 }
 
 // NewWriter creates a new read-write repository.
 func NewWriter(db *pgxpool.Pool) *WriterRepository {
 	return &WriterRepository{
 		ReaderRepository: NewReader(db),
-		db:               db,
 	}
 }
 
@@ -49,7 +47,7 @@ func (r *WriterRepository) SaveResort(ctx context.Context, resort *models.Resort
 		RETURNING id
 	`
 
-	err := r.db.QueryRow(ctx, query,
+	err := r.ReaderRepository.db.QueryRow(ctx, query,
 		resort.ID, resort.Slug, resort.Name, resort.Prefecture, resort.Region,
 		resort.TopElevationM, resort.BaseElevationM, resort.VerticalM,
 		resort.NumCourses, resort.LongestCourseKM, resort.SteepestCourseDeg,
@@ -80,7 +78,7 @@ func (r *WriterRepository) SaveSnowDepthReadings(ctx context.Context, readings [
 		batch.Queue(query, reading.ResortID, reading.Date, reading.DepthCM, reading.Season)
 	}
 
-	results := r.db.SendBatch(ctx, batch)
+	results := r.ReaderRepository.db.SendBatch(ctx, batch)
 	defer results.Close()
 
 	for range readings {
@@ -110,7 +108,7 @@ func (r *WriterRepository) SaveDailySnowfall(ctx context.Context, snowfalls []mo
 		batch.Queue(query, sf.ResortID, sf.Date, sf.SnowfallCM, sf.Season)
 	}
 
-	results := r.db.SendBatch(ctx, batch)
+	results := r.ReaderRepository.db.SendBatch(ctx, batch)
 	defer results.Close()
 
 	for range snowfalls {
