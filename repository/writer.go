@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+const batchChunkSize = 500
+
 // WriterRepository provides full read-write database access.
 type WriterRepository struct {
 	*ReaderRepository
@@ -73,18 +75,25 @@ func (r *WriterRepository) SaveSnowDepthReadings(ctx context.Context, readings [
 			season = EXCLUDED.season
 	`
 
-	batch := &pgx.Batch{}
-	for _, reading := range readings {
-		batch.Queue(query, reading.ResortID, reading.Date, reading.DepthCM, reading.Season)
-	}
-
-	results := r.ReaderRepository.db.SendBatch(ctx, batch)
-	defer results.Close()
-
-	for range readings {
-		if _, err := results.Exec(); err != nil {
-			return fmt.Errorf("save reading: %w", err)
+	for start := 0; start < len(readings); start += batchChunkSize {
+		end := start + batchChunkSize
+		if end > len(readings) {
+			end = len(readings)
 		}
+		chunk := readings[start:end]
+
+		batch := &pgx.Batch{}
+		for _, reading := range chunk {
+			batch.Queue(query, reading.ResortID, reading.Date, reading.DepthCM, reading.Season)
+		}
+		results := r.ReaderRepository.db.SendBatch(ctx, batch)
+		for range chunk {
+			if _, err := results.Exec(); err != nil {
+				results.Close()
+				return fmt.Errorf("save reading: %w", err)
+			}
+		}
+		results.Close()
 	}
 
 	return nil
@@ -103,18 +112,25 @@ func (r *WriterRepository) SaveDailySnowfall(ctx context.Context, snowfalls []mo
 			season = EXCLUDED.season
 	`
 
-	batch := &pgx.Batch{}
-	for _, sf := range snowfalls {
-		batch.Queue(query, sf.ResortID, sf.Date, sf.SnowfallCM, sf.Season)
-	}
-
-	results := r.ReaderRepository.db.SendBatch(ctx, batch)
-	defer results.Close()
-
-	for range snowfalls {
-		if _, err := results.Exec(); err != nil {
-			return fmt.Errorf("save snowfall: %w", err)
+	for start := 0; start < len(snowfalls); start += batchChunkSize {
+		end := start + batchChunkSize
+		if end > len(snowfalls) {
+			end = len(snowfalls)
 		}
+		chunk := snowfalls[start:end]
+
+		batch := &pgx.Batch{}
+		for _, sf := range chunk {
+			batch.Queue(query, sf.ResortID, sf.Date, sf.SnowfallCM, sf.Season)
+		}
+		results := r.ReaderRepository.db.SendBatch(ctx, batch)
+		for range chunk {
+			if _, err := results.Exec(); err != nil {
+				results.Close()
+				return fmt.Errorf("save snowfall: %w", err)
+			}
+		}
+		results.Close()
 	}
 
 	return nil
