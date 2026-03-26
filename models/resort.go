@@ -31,15 +31,6 @@ type DailySnowfall struct {
 	Season     string    `json:"season" db:"season"`
 }
 
-type ResortURL struct {
-	BaseURL    string
-	InfoURL    string
-	SnowURL    string
-	Slug       string
-	Prefecture string
-	Area       string
-}
-
 type WeeklyResortStats struct {
 	ResortID        string   `json:"resort_id"`
 	Name            string   `json:"name"`
