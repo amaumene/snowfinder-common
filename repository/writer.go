@@ -99,6 +99,33 @@ func (r *WriterRepository) SaveSnowDepthReadings(ctx context.Context, readings [
 	return nil
 }
 
+func (r *WriterRepository) SaveFailedScrapeAttempt(ctx context.Context, resortURL, errorMessage string) error {
+	query := `
+		INSERT INTO failed_scrape_attempts (id, resort_url, error_message, failed_at, retried)
+		VALUES (gen_random_uuid(), $1, $2, NOW(), FALSE)
+	`
+
+	if _, err := r.ReaderRepository.db.Exec(ctx, query, resortURL, errorMessage); err != nil {
+		return fmt.Errorf("save failed scrape attempt: %w", err)
+	}
+
+	return nil
+}
+
+func (r *WriterRepository) MarkFailedAttemptRetried(ctx context.Context, id string) error {
+	query := `
+		UPDATE failed_scrape_attempts
+		SET retried = TRUE, retried_at = NOW()
+		WHERE id = $1
+	`
+
+	if _, err := r.ReaderRepository.db.Exec(ctx, query, id); err != nil {
+		return fmt.Errorf("mark failed attempt retried: %w", err)
+	}
+
+	return nil
+}
+
 func (r *WriterRepository) SaveDailySnowfall(ctx context.Context, snowfalls []models.DailySnowfall) error {
 	if len(snowfalls) == 0 {
 		return nil

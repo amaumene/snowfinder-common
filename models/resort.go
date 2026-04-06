@@ -63,3 +63,12 @@ type ResortWithPeaks struct {
 	Resort Resort
 	Peaks  []PeakPeriod
 }
+
+type FailedScrapeAttempt struct {
+	ID           string     `json:"id" db:"id"`
+	ResortURL    string     `json:"resort_url" db:"resort_url"`
+	ErrorMessage string     `json:"error_message" db:"error_message"`
+	FailedAt     time.Time  `json:"failed_at" db:"failed_at"`
+	Retried      bool       `json:"retried" db:"retried"`
+	RetriedAt    *time.Time `json:"retried_at" db:"retried_at"`
+}

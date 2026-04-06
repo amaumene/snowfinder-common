@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/amaumene/snowfinder-common/models"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -68,111 +69,86 @@ func (r *ReaderRepository) GetResortByID(ctx context.Context, id string) (*model
 	return &resort, nil
 }
 
-func (r *ReaderRepository) GetSnowiestResortsForWeek(ctx context.Context, weekStart string, limit int) ([]models.WeeklyResortStats, error) {
-	query := `
-		WITH weekly_data AS (
+// GetSnowiestResorts queries snowiest resorts for a date range with optional prefecture filter.
+// If endDate is empty, it defaults to startDate + 6 days (week mode).
+func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, endDate, prefecture string, limit int) ([]models.WeeklyResortStats, error) {
+	args := []interface{}{startDate}
+
+	var cteFilter string
+	if endDate == "" {
+		// Week mode: use mmdd arithmetic on a single start date
+		cteFilter = `mmdd(date) >= mmdd($1::date)
+			  AND mmdd(date) <= mmdd($1::date + INTERVAL '6 days')`
+	} else {
+		// Date range mode: handle wrap-around (e.g. Dec–Jan)
+		args = append(args, endDate)
+		cteFilter = `CASE
+					WHEN $1 <= $2 THEN
+						mmdd(date) >= $1 AND mmdd(date) <= $2
+					ELSE
+						mmdd(date) >= $1 OR mmdd(date) <= $2
+				END`
+	}
+
+	// Optional prefecture filter — appended as the next positional parameter
+	prefectureClause := ""
+	if prefecture != "" {
+		args = append(args, prefecture)
+		prefectureClause = fmt.Sprintf("AND r.prefecture = $%d", len(args))
+	}
+
+	// LIMIT is always the last parameter
+	args = append(args, limit)
+	limitParam := fmt.Sprintf("$%d", len(args))
+
+	query := fmt.Sprintf(`
+		WITH range_data AS (
 			SELECT
 				resort_id,
 				EXTRACT(YEAR FROM date) as year,
 				SUM(snowfall_cm) as total_snowfall
 			FROM daily_snowfall
-			WHERE TO_CHAR(date, 'MM-DD') >= TO_CHAR($1::date, 'MM-DD')
-			  AND TO_CHAR(date, 'MM-DD') <= TO_CHAR($1::date + INTERVAL '6 days', 'MM-DD')
+			WHERE %s
 			GROUP BY resort_id, year
 		),
-		avg_weekly_data AS (
+		avg_range_data AS (
 			SELECT
 				resort_id,
 				AVG(total_snowfall) as avg_snowfall,
 				COUNT(*) as years_with_data
-			FROM weekly_data
+			FROM range_data
 			GROUP BY resort_id
 		)
 		SELECT
 			r.id,
 			r.name,
 			r.prefecture,
-			ROUND(awd.avg_snowfall)::int as avg_snowfall,
-			awd.years_with_data,
+			ROUND(ard.avg_snowfall)::int as avg_snowfall,
+			ard.years_with_data,
 			r.top_elevation_m,
 			r.base_elevation_m,
 			r.vertical_m,
 			r.num_courses,
 			r.longest_course_km
-		FROM avg_weekly_data awd
-		JOIN resorts r ON r.id = awd.resort_id
-		WHERE awd.years_with_data >= 1
-		ORDER BY awd.avg_snowfall DESC
-		LIMIT $2
-	`
+		FROM avg_range_data ard
+		JOIN resorts r ON r.id = ard.resort_id
+		WHERE ard.years_with_data >= 1
+		%s
+		ORDER BY ard.avg_snowfall DESC
+		LIMIT %s
+	`, cteFilter, prefectureClause, limitParam)
 
-	rows, err := r.db.Query(ctx, query, weekStart, limit)
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query snowiest resorts: %w", err)
 	}
 	defer rows.Close()
 
-	var results []models.WeeklyResortStats
-	for rows.Next() {
-		var stat models.WeeklyResortStats
-		if err := rows.Scan(&stat.ResortID, &stat.Name, &stat.Prefecture, &stat.TotalSnowfall, &stat.YearsWithData,
-			&stat.TopElevationM, &stat.BaseElevationM, &stat.VerticalM, &stat.NumCourses, &stat.LongestCourseKM); err != nil {
-			return nil, fmt.Errorf("scan result: %w", err)
-		}
-		results = append(results, stat)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate rows: %w", err)
-	}
-
-	return results, nil
+	return scanWeeklyResortStats(rows)
 }
 
-func (r *ReaderRepository) GetSnowiestResortsForWeekByPrefecture(ctx context.Context, weekStart, prefecture string, limit int) ([]models.WeeklyResortStats, error) {
-	query := `
-		WITH weekly_data AS (
-			SELECT
-				resort_id,
-				EXTRACT(YEAR FROM date) as year,
-				SUM(snowfall_cm) as total_snowfall
-			FROM daily_snowfall
-			WHERE TO_CHAR(date, 'MM-DD') >= TO_CHAR($1::date, 'MM-DD')
-			  AND TO_CHAR(date, 'MM-DD') <= TO_CHAR($1::date + INTERVAL '6 days', 'MM-DD')
-			GROUP BY resort_id, year
-		),
-		avg_weekly_data AS (
-			SELECT
-				resort_id,
-				AVG(total_snowfall) as avg_snowfall,
-				COUNT(*) as years_with_data
-			FROM weekly_data
-			GROUP BY resort_id
-		)
-		SELECT
-			r.id,
-			r.name,
-			r.prefecture,
-			ROUND(awd.avg_snowfall)::int as avg_snowfall,
-			awd.years_with_data,
-			r.top_elevation_m,
-			r.base_elevation_m,
-			r.vertical_m,
-			r.num_courses,
-			r.longest_course_km
-		FROM avg_weekly_data awd
-		JOIN resorts r ON r.id = awd.resort_id
-		WHERE awd.years_with_data >= 1
-		  AND r.prefecture = $2
-		ORDER BY awd.avg_snowfall DESC
-		LIMIT $3
-	`
-
-	rows, err := r.db.Query(ctx, query, weekStart, prefecture, limit)
-	if err != nil {
-		return nil, fmt.Errorf("query snowiest resorts by prefecture: %w", err)
-	}
-	defer rows.Close()
-
+// scanWeeklyResortStats scans pgx rows into a slice of WeeklyResortStats.
+func scanWeeklyResortStats(rows pgx.Rows) ([]models.WeeklyResortStats, error) {
 	var results []models.WeeklyResortStats
 	for rows.Next() {
 		var stat models.WeeklyResortStats
@@ -185,137 +161,6 @@ func (r *ReaderRepository) GetSnowiestResortsForWeekByPrefecture(ctx context.Con
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate rows: %w", err)
 	}
-
-	return results, nil
-}
-
-func (r *ReaderRepository) GetSnowiestResortsForDateRange(ctx context.Context, startDate, endDate string, limit int) ([]models.WeeklyResortStats, error) {
-	query := `
-		WITH date_range_data AS (
-			SELECT
-				resort_id,
-				EXTRACT(YEAR FROM date) as year,
-				SUM(snowfall_cm) as total_snowfall
-			FROM daily_snowfall
-			WHERE
-				CASE
-					WHEN $1 <= $2 THEN
-						TO_CHAR(date, 'MM-DD') >= $1 AND TO_CHAR(date, 'MM-DD') <= $2
-					ELSE
-						TO_CHAR(date, 'MM-DD') >= $1 OR TO_CHAR(date, 'MM-DD') <= $2
-				END
-			GROUP BY resort_id, year
-		),
-		avg_range_data AS (
-			SELECT
-				resort_id,
-				AVG(total_snowfall) as avg_snowfall,
-				COUNT(*) as years_with_data
-			FROM date_range_data
-			GROUP BY resort_id
-		)
-		SELECT
-			r.id,
-			r.name,
-			r.prefecture,
-			ROUND(ard.avg_snowfall)::int as avg_snowfall,
-			ard.years_with_data,
-			r.top_elevation_m,
-			r.base_elevation_m,
-			r.vertical_m,
-			r.num_courses,
-			r.longest_course_km
-		FROM resorts r
-		LEFT JOIN avg_range_data ard ON r.id = ard.resort_id
-		WHERE ard.years_with_data >= 1
-		ORDER BY ard.avg_snowfall DESC NULLS LAST
-		LIMIT $3
-	`
-
-	rows, err := r.db.Query(ctx, query, startDate, endDate, limit)
-	if err != nil {
-		return nil, fmt.Errorf("query snowiest resorts for date range: %w", err)
-	}
-	defer rows.Close()
-
-	var results []models.WeeklyResortStats
-	for rows.Next() {
-		var stat models.WeeklyResortStats
-		if err := rows.Scan(&stat.ResortID, &stat.Name, &stat.Prefecture, &stat.TotalSnowfall, &stat.YearsWithData,
-			&stat.TopElevationM, &stat.BaseElevationM, &stat.VerticalM, &stat.NumCourses, &stat.LongestCourseKM); err != nil {
-			return nil, fmt.Errorf("scan result: %w", err)
-		}
-		results = append(results, stat)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate rows: %w", err)
-	}
-
-	return results, nil
-}
-
-func (r *ReaderRepository) GetSnowiestResortsForDateRangeByPrefecture(ctx context.Context, startDate, endDate, prefecture string, limit int) ([]models.WeeklyResortStats, error) {
-	query := `
-		WITH date_range_data AS (
-			SELECT
-				resort_id,
-				EXTRACT(YEAR FROM date) as year,
-				SUM(snowfall_cm) as total_snowfall
-			FROM daily_snowfall
-			WHERE
-				CASE
-					WHEN $1 <= $2 THEN
-						TO_CHAR(date, 'MM-DD') >= $1 AND TO_CHAR(date, 'MM-DD') <= $2
-					ELSE
-						TO_CHAR(date, 'MM-DD') >= $1 OR TO_CHAR(date, 'MM-DD') <= $2
-				END
-			GROUP BY resort_id, year
-		),
-		avg_range_data AS (
-			SELECT
-				resort_id,
-				AVG(total_snowfall) as avg_snowfall,
-				COUNT(*) as years_with_data
-			FROM date_range_data
-			GROUP BY resort_id
-		)
-		SELECT
-			r.id,
-			r.name,
-			r.prefecture,
-			ROUND(ard.avg_snowfall)::int as avg_snowfall,
-			ard.years_with_data,
-			r.top_elevation_m,
-			r.base_elevation_m,
-			r.vertical_m,
-			r.num_courses,
-			r.longest_course_km
-		FROM resorts r
-		LEFT JOIN avg_range_data ard ON r.id = ard.resort_id
-		WHERE r.prefecture = $3 AND ard.years_with_data >= 1
-		ORDER BY ard.avg_snowfall DESC NULLS LAST
-		LIMIT $4
-	`
-
-	rows, err := r.db.Query(ctx, query, startDate, endDate, prefecture, limit)
-	if err != nil {
-		return nil, fmt.Errorf("query snowiest resorts for date range by prefecture: %w", err)
-	}
-	defer rows.Close()
-
-	var results []models.WeeklyResortStats
-	for rows.Next() {
-		var stat models.WeeklyResortStats
-		if err := rows.Scan(&stat.ResortID, &stat.Name, &stat.Prefecture, &stat.TotalSnowfall, &stat.YearsWithData,
-			&stat.TopElevationM, &stat.BaseElevationM, &stat.VerticalM, &stat.NumCourses, &stat.LongestCourseKM); err != nil {
-			return nil, fmt.Errorf("scan result: %w", err)
-		}
-		results = append(results, stat)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate rows: %w", err)
-	}
-
 	return results, nil
 }
 
@@ -379,6 +224,35 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 	}
 
 	return results, nil
+}
+
+func (r *ReaderRepository) GetPendingFailedScrapeAttempts(ctx context.Context) ([]models.FailedScrapeAttempt, error) {
+	query := `
+		SELECT id, resort_url, error_message, failed_at, retried, retried_at
+		FROM failed_scrape_attempts
+		WHERE retried = FALSE
+		ORDER BY failed_at ASC
+	`
+
+	rows, err := r.db.Query(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("query failed scrape attempts: %w", err)
+	}
+	defer rows.Close()
+
+	var attempts []models.FailedScrapeAttempt
+	for rows.Next() {
+		var a models.FailedScrapeAttempt
+		if err := rows.Scan(&a.ID, &a.ResortURL, &a.ErrorMessage, &a.FailedAt, &a.Retried, &a.RetriedAt); err != nil {
+			return nil, fmt.Errorf("scan failed scrape attempt: %w", err)
+		}
+		attempts = append(attempts, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+
+	return attempts, nil
 }
 
 func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID string) ([]models.PeakPeriod, error) {
