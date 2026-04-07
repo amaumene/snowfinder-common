@@ -7,14 +7,10 @@ type Config struct {
 	DatabaseURL string
 }
 
-// Default returns configuration values, reading from environment variables first
-// and falling back to development defaults.
+// Default returns configuration values from environment variables.
+// DATABASE_URL must be set; callers should validate before connecting.
 func Default() Config {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		dbURL = "postgres://snowfinder:snowfinder@localhost:5432/snowfinder?sslmode=disable"
-	}
 	return Config{
-		DatabaseURL: dbURL,
+		DatabaseURL: os.Getenv("DATABASE_URL"),
 	}
 }

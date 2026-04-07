@@ -72,7 +72,7 @@ func (r *ReaderRepository) GetResortByID(ctx context.Context, id string) (*model
 // GetSnowiestResorts queries snowiest resorts for a date range with optional prefecture filter.
 // If endDate is empty, it defaults to startDate + 6 days (week mode).
 func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, endDate, prefecture string, limit int) ([]models.WeeklyResortStats, error) {
-	args := []interface{}{startDate}
+	args := []any{startDate}
 
 	var cteFilter string
 	if endDate == "" {
@@ -149,7 +149,7 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 
 // scanWeeklyResortStats scans pgx rows into a slice of WeeklyResortStats.
 func scanWeeklyResortStats(rows pgx.Rows) ([]models.WeeklyResortStats, error) {
-	var results []models.WeeklyResortStats
+	results := []models.WeeklyResortStats{}
 	for rows.Next() {
 		var stat models.WeeklyResortStats
 		if err := rows.Scan(&stat.ResortID, &stat.Name, &stat.Prefecture, &stat.TotalSnowfall, &stat.YearsWithData,

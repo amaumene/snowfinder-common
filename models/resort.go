@@ -60,8 +60,8 @@ type PeakPeriod struct {
 }
 
 type ResortWithPeaks struct {
-	Resort Resort
-	Peaks  []PeakPeriod
+	Resort Resort       `json:"resort"`
+	Peaks  []PeakPeriod `json:"peaks"`
 }
 
 type FailedScrapeAttempt struct {
