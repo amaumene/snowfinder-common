@@ -3,7 +3,7 @@ package repository
 import (
 	"context"
 
-	"github.com/amaumene/snowfinder-common/models"
+	"github.com/amaumene/snowfinder_common/models"
 )
 
 // Reader provides read-only access to the database.

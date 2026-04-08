@@ -3,8 +3,9 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
-	"github.com/amaumene/snowfinder-common/models"
+	"github.com/amaumene/snowfinder_common/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -19,7 +20,27 @@ func NewReader(db *pgxpool.Pool) *ReaderRepository {
 	return &ReaderRepository{db: db}
 }
 
+// doyToMMDD converts a day-of-year integer (1-366) to "MM-DD" string.
+func doyToMMDD(doy int) string {
+	t := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, doy-1)
+	return t.Format("01-02")
+}
+
+// mmddToDOY converts an "MM-DD" string to a day-of-year integer.
+func mmddToDOY(mmdd string) (int, error) {
+	t, err := time.Parse("01-02", mmdd)
+	if err != nil {
+		return 0, fmt.Errorf("parse MM-DD %q: %w", mmdd, err)
+	}
+	// time.Parse uses year 0000; set to 2000 for consistent YearDay
+	t = time.Date(2000, t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	return t.YearDay(), nil
+}
+
 func (r *ReaderRepository) GetResortBySlug(ctx context.Context, slug string) (*models.Resort, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	query := `
 		SELECT id, slug, name, prefecture, region,
 			   top_elevation_m, base_elevation_m, vertical_m,
@@ -45,6 +66,9 @@ func (r *ReaderRepository) GetResortBySlug(ctx context.Context, slug string) (*m
 }
 
 func (r *ReaderRepository) GetResortByID(ctx context.Context, id string) (*models.Resort, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	query := `
 		SELECT id, slug, name, prefecture, region,
 			   top_elevation_m, base_elevation_m, vertical_m,
@@ -72,23 +96,42 @@ func (r *ReaderRepository) GetResortByID(ctx context.Context, id string) (*model
 // GetSnowiestResorts queries snowiest resorts for a date range with optional prefecture filter.
 // If endDate is empty, it defaults to startDate + 6 days (week mode).
 func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, endDate, prefecture string, limit int) ([]models.WeeklyResortStats, error) {
-	args := []any{startDate}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 
-	var cteFilter string
+	var startDOY, endDOY int
+
 	if endDate == "" {
-		// Week mode: use mmdd arithmetic on a single start date
-		cteFilter = `mmdd(date) >= mmdd($1::date)
-			  AND mmdd(date) <= mmdd($1::date + INTERVAL '6 days')`
+		// Week mode: startDate is "YYYY-MM-DD"
+		startTime, err := time.Parse("2006-01-02", startDate)
+		if err != nil {
+			return nil, fmt.Errorf("parse start date: %w", err)
+		}
+		startDOY = startTime.YearDay()
+		endTime := startTime.AddDate(0, 0, 6)
+		endDOY = endTime.YearDay()
 	} else {
-		// Date range mode: handle wrap-around (e.g. Dec–Jan)
-		args = append(args, endDate)
-		cteFilter = `CASE
-					WHEN $1 <= $2 THEN
-						mmdd(date) >= $1 AND mmdd(date) <= $2
-					ELSE
-						mmdd(date) >= $1 OR mmdd(date) <= $2
-				END`
+		// Date range mode: both are "MM-DD"
+		var err error
+		startDOY, err = mmddToDOY(startDate)
+		if err != nil {
+			return nil, fmt.Errorf("parse start date: %w", err)
+		}
+		endDOY, err = mmddToDOY(endDate)
+		if err != nil {
+			return nil, fmt.Errorf("parse end date: %w", err)
+		}
 	}
+
+	var dateFilter string
+	if startDOY <= endDOY {
+		dateFilter = "EXTRACT(DOY FROM date) >= $1 AND EXTRACT(DOY FROM date) <= $2"
+	} else {
+		// Cross-year boundary (e.g., Dec 15 to Jan 15)
+		dateFilter = "(EXTRACT(DOY FROM date) >= $1 OR EXTRACT(DOY FROM date) <= $2)"
+	}
+
+	args := []any{startDOY, endDOY}
 
 	// Optional prefecture filter — appended as the next positional parameter
 	prefectureClause := ""
@@ -136,7 +179,7 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 		%s
 		ORDER BY ard.avg_snowfall DESC
 		LIMIT %s
-	`, cteFilter, prefectureClause, limitParam)
+	`, dateFilter, prefectureClause, limitParam)
 
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
@@ -165,13 +208,16 @@ func scanWeeklyResortStats(rows pgx.Rows) ([]models.WeeklyResortStats, error) {
 }
 
 func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models.ResortWithPeaks, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	// Single JOIN query to fetch resorts and their peaks together
 	query := `
 		SELECT r.id, r.slug, r.name, r.prefecture, r.region,
 			   r.top_elevation_m, r.base_elevation_m, r.vertical_m,
 			   r.num_courses, r.longest_course_km, r.steepest_course_deg,
 			   r.last_updated,
-			   p.id, p.peak_rank, p.start_date, p.end_date, p.center_date,
+			   p.id, p.peak_rank, p.start_doy, p.end_doy, p.center_doy,
 			   p.avg_daily_snowfall, p.total_period_snowfall, p.prominence_score,
 			   p.years_of_data, p.confidence_level, p.calculated_at
 		FROM resorts r
@@ -191,18 +237,22 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 	for rows.Next() {
 		var resort models.Resort
 		var peak models.PeakPeriod
+		var startDOY, endDOY, centerDOY int
 		if err := rows.Scan(
 			&resort.ID, &resort.Slug, &resort.Name, &resort.Prefecture, &resort.Region,
 			&resort.TopElevationM, &resort.BaseElevationM, &resort.VerticalM,
 			&resort.NumCourses, &resort.LongestCourseKM, &resort.SteepestCourseDeg,
 			&resort.LastUpdated,
-			&peak.ID, &peak.PeakRank, &peak.StartDate, &peak.EndDate, &peak.CenterDate,
+			&peak.ID, &peak.PeakRank, &startDOY, &endDOY, &centerDOY,
 			&peak.AvgDailySnowfall, &peak.TotalPeriodSnowfall, &peak.ProminenceScore,
 			&peak.YearsOfData, &peak.ConfidenceLevel, &peak.CalculatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan resort with peak: %w", err)
 		}
 
+		peak.StartDate = doyToMMDD(startDOY)
+		peak.EndDate = doyToMMDD(endDOY)
+		peak.CenterDate = doyToMMDD(centerDOY)
 		peak.ResortID = resort.ID
 
 		if _, exists := resortMap[resort.ID]; !exists {
@@ -227,6 +277,9 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 }
 
 func (r *ReaderRepository) GetPendingFailedScrapeAttempts(ctx context.Context) ([]models.FailedScrapeAttempt, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	query := `
 		SELECT id, resort_url, error_message, failed_at, retried, retried_at
 		FROM failed_scrape_attempts
@@ -256,8 +309,11 @@ func (r *ReaderRepository) GetPendingFailedScrapeAttempts(ctx context.Context) (
 }
 
 func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID string) ([]models.PeakPeriod, error) {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	query := `
-		SELECT id, resort_id, peak_rank, start_date, end_date, center_date,
+		SELECT id, resort_id, peak_rank, start_doy, end_doy, center_doy,
 			   avg_daily_snowfall, total_period_snowfall, prominence_score,
 			   years_of_data, confidence_level, calculated_at
 		FROM resort_peak_periods
@@ -274,13 +330,17 @@ func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID
 	var peaks []models.PeakPeriod
 	for rows.Next() {
 		var peak models.PeakPeriod
+		var startDOY, endDOY, centerDOY int
 		if err := rows.Scan(
-			&peak.ID, &peak.ResortID, &peak.PeakRank, &peak.StartDate, &peak.EndDate, &peak.CenterDate,
+			&peak.ID, &peak.ResortID, &peak.PeakRank, &startDOY, &endDOY, &centerDOY,
 			&peak.AvgDailySnowfall, &peak.TotalPeriodSnowfall, &peak.ProminenceScore,
 			&peak.YearsOfData, &peak.ConfidenceLevel, &peak.CalculatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan peak period: %w", err)
 		}
+		peak.StartDate = doyToMMDD(startDOY)
+		peak.EndDate = doyToMMDD(endDOY)
+		peak.CenterDate = doyToMMDD(centerDOY)
 		peaks = append(peaks, peak)
 	}
 	if err := rows.Err(); err != nil {

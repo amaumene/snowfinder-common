@@ -1,8 +1,11 @@
-module github.com/amaumene/snowfinder-common
+module github.com/amaumene/snowfinder_scraper
 
 go 1.25.7
 
+replace github.com/amaumene/snowfinder_common => ../snowfinder_common_go
+
 require (
+	github.com/amaumene/snowfinder_common v0.0.0-00010101000000-000000000000
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.1
 )

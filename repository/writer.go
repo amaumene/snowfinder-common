@@ -3,8 +3,9 @@ package repository
 import (
 	"context"
 	"fmt"
+	"time"
 
-	"github.com/amaumene/snowfinder-common/models"
+	"github.com/amaumene/snowfinder_common/models"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -25,6 +26,9 @@ func NewWriter(db *pgxpool.Pool) *WriterRepository {
 }
 
 func (r *WriterRepository) SaveResort(ctx context.Context, resort *models.Resort) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	if resort.ID == "" {
 		resort.ID = uuid.New().String()
 	}
@@ -67,12 +71,14 @@ func (r *WriterRepository) SaveSnowDepthReadings(ctx context.Context, readings [
 		return nil
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	query := `
-		INSERT INTO snow_depth_readings (resort_id, date, depth_cm, season)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO snow_depth_readings (resort_id, date, depth_cm)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (resort_id, date) DO UPDATE SET
-			depth_cm = EXCLUDED.depth_cm,
-			season = EXCLUDED.season
+			depth_cm = EXCLUDED.depth_cm
 	`
 
 	for start := 0; start < len(readings); start += batchChunkSize {
@@ -84,7 +90,7 @@ func (r *WriterRepository) SaveSnowDepthReadings(ctx context.Context, readings [
 
 		batch := &pgx.Batch{}
 		for _, reading := range chunk {
-			batch.Queue(query, reading.ResortID, reading.Date, reading.DepthCM, reading.Season)
+			batch.Queue(query, reading.ResortID, reading.Date, reading.DepthCM)
 		}
 		results := r.ReaderRepository.db.SendBatch(ctx, batch)
 		for range chunk {
@@ -100,6 +106,9 @@ func (r *WriterRepository) SaveSnowDepthReadings(ctx context.Context, readings [
 }
 
 func (r *WriterRepository) SaveFailedScrapeAttempt(ctx context.Context, resortURL, errorMessage string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	query := `
 		INSERT INTO failed_scrape_attempts (id, resort_url, error_message, failed_at, retried)
 		VALUES (gen_random_uuid(), $1, $2, NOW(), FALSE)
@@ -113,6 +122,9 @@ func (r *WriterRepository) SaveFailedScrapeAttempt(ctx context.Context, resortUR
 }
 
 func (r *WriterRepository) MarkFailedAttemptRetried(ctx context.Context, id string) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	query := `
 		UPDATE failed_scrape_attempts
 		SET retried = TRUE, retried_at = NOW()
@@ -131,12 +143,14 @@ func (r *WriterRepository) SaveDailySnowfall(ctx context.Context, snowfalls []mo
 		return nil
 	}
 
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	query := `
-		INSERT INTO daily_snowfall (resort_id, date, snowfall_cm, season)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO daily_snowfall (resort_id, date, snowfall_cm)
+		VALUES ($1, $2, $3)
 		ON CONFLICT (resort_id, date) DO UPDATE SET
-			snowfall_cm = EXCLUDED.snowfall_cm,
-			season = EXCLUDED.season
+			snowfall_cm = EXCLUDED.snowfall_cm
 	`
 
 	for start := 0; start < len(snowfalls); start += batchChunkSize {
@@ -148,7 +162,7 @@ func (r *WriterRepository) SaveDailySnowfall(ctx context.Context, snowfalls []mo
 
 		batch := &pgx.Batch{}
 		for _, sf := range chunk {
-			batch.Queue(query, sf.ResortID, sf.Date, sf.SnowfallCM, sf.Season)
+			batch.Queue(query, sf.ResortID, sf.Date, sf.SnowfallCM)
 		}
 		results := r.ReaderRepository.db.SendBatch(ctx, batch)
 		for range chunk {

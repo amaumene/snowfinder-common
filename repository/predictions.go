@@ -5,8 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
-	"github.com/amaumene/snowfinder-common/models"
+	"github.com/amaumene/snowfinder_common/models"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -23,6 +24,9 @@ func NewPredictionRepository(db *pgxpool.Pool) *PredictionRepository {
 
 // LoadPredictionConfig loads per-resort config from prediction_config table.
 func (r *PredictionRepository) LoadPredictionConfig(ctx context.Context) (map[string]models.PredictorResortConfig, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	rows, err := r.db.Query(ctx, "SELECT resort_id, config_data FROM prediction_config")
 	if err != nil {
 		return nil, fmt.Errorf("query prediction_config: %w", err)
@@ -47,6 +51,9 @@ func (r *PredictionRepository) LoadPredictionConfig(ctx context.Context) (map[st
 
 // LoadGlobalParams loads global predictor parameters.
 func (r *PredictionRepository) LoadGlobalParams(ctx context.Context) (models.GlobalParams, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
 	var paramsData []byte
 	err := r.db.QueryRow(ctx,
 		"SELECT params_data FROM prediction_global_params WHERE id = 1",
@@ -64,17 +71,10 @@ func (r *PredictionRepository) LoadGlobalParams(ctx context.Context) (models.Glo
 	return params, nil
 }
 
-// SavePredictions atomically replaces all predictions (DELETE + INSERT in a transaction).
+// SavePredictions upserts all predictions using INSERT ON CONFLICT.
 func (r *PredictionRepository) SavePredictions(ctx context.Context, predictions *models.PredictionData) error {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, "DELETE FROM predictions"); err != nil {
-		return fmt.Errorf("delete predictions: %w", err)
-	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 
 	batch := &pgx.Batch{}
 	for resortID, pred := range predictions.Resorts {
@@ -83,19 +83,23 @@ func (r *PredictionRepository) SavePredictions(ctx context.Context, predictions 
 			return fmt.Errorf("marshal prediction for %s: %w", resortID, err)
 		}
 		batch.Queue(
-			"INSERT INTO predictions (resort_id, prediction_data, generated_at) VALUES ($1, $2, $3)",
+			`INSERT INTO predictions (resort_id, prediction_data, generated_at)
+			 VALUES ($1, $2, $3)
+			 ON CONFLICT (resort_id) DO UPDATE
+			 SET prediction_data = EXCLUDED.prediction_data,
+			     generated_at = EXCLUDED.generated_at`,
 			resortID, predJSON, predictions.GeneratedAt,
 		)
 	}
 
-	results := tx.SendBatch(ctx, batch)
+	results := r.db.SendBatch(ctx, batch)
 	for range predictions.Resorts {
 		if _, err := results.Exec(); err != nil {
 			results.Close()
-			return fmt.Errorf("insert prediction: %w", err)
+			return fmt.Errorf("upsert prediction: %w", err)
 		}
 	}
 	results.Close()
 
-	return tx.Commit(ctx)
+	return nil
 }
