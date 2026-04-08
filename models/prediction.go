@@ -43,7 +43,7 @@ type DailyForecast struct {
 	WeatherCode       int     `json:"weather_code"`
 	VsHistoricalAvgCM float64 `json:"vs_historical_avg_cm"`
 	HistoricalAvgCM   float64 `json:"historical_avg_cm"`
-	// Meteoblue-enriched fields (zero/nil when meteoblue not available)
+	// Derived fields from JMA MSM/GSM snow model
 	SnowmeltMM           float64     `json:"snowmelt_mm"`
 	PrecipType           *string     `json:"precip_type"`
 	SnowProbPct          *float64    `json:"snow_probability_pct"`
@@ -55,9 +55,7 @@ type DailyForecast struct {
 	WindDirectionDeg     *int        `json:"wind_direction_deg"`
 	Sunrise              *string     `json:"sunrise"`
 	Sunset               *string     `json:"sunset"`
-	// WxTech-enriched fields (omitted when wxtech not available)
-	WxTechWeatherCode    *int     `json:"wxtech_weather_code,omitempty"`
-	PrecipProbabilityPct *float64 `json:"precip_probability_pct,omitempty"`
+	PrecipProbabilityPct *float64    `json:"precip_probability_pct,omitempty"`
 }
 
 // PowderProb holds ensemble-based snowfall probability thresholds.
