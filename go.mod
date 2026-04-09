@@ -1,6 +1,6 @@
 module github.com/amaumene/snowfinder_scraper
 
-go 1.25.7
+go 1.25.8
 
 replace github.com/amaumene/snowfinder_common => ../snowfinder_common_go
 
