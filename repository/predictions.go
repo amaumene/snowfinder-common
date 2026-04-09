@@ -14,12 +14,24 @@ import (
 
 // PredictionRepository provides access to prediction-related tables.
 type PredictionRepository struct {
-	db *pgxpool.Pool
+	db      *pgxpool.Pool
+	beginTx func(context.Context) (predictionTx, error)
+}
+
+type predictionTx interface {
+	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
+	Commit(context.Context) error
+	Rollback(context.Context) error
 }
 
 // NewPredictionRepository creates a new prediction repository.
 func NewPredictionRepository(db *pgxpool.Pool) *PredictionRepository {
-	return &PredictionRepository{db: db}
+	return &PredictionRepository{
+		db: db,
+		beginTx: func(ctx context.Context) (predictionTx, error) {
+			return db.Begin(ctx)
+		},
+	}
 }
 
 // LoadPredictionConfig loads per-resort config from prediction_config table.
@@ -46,7 +58,11 @@ func (r *PredictionRepository) LoadPredictionConfig(ctx context.Context) (map[st
 		}
 		resorts[resortID] = cfg
 	}
-	return resorts, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate prediction_config rows: %w", err)
+	}
+
+	return resorts, nil
 }
 
 // LoadGlobalParams loads global predictor parameters.
@@ -77,10 +93,50 @@ func (r *PredictionRepository) SavePredictions(ctx context.Context, predictions 
 	defer cancel()
 
 	batch := &pgx.Batch{}
+	count, err := queuePredictionBatch(batch, predictions)
+	if err != nil {
+		return fmt.Errorf("prepare predictions batch: %w", err)
+	}
+	if count == 0 {
+		return nil
+	}
+	if r.beginTx == nil {
+		return fmt.Errorf("begin prediction transaction: repository not initialized")
+	}
+
+	tx, err := r.beginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin prediction transaction: %w", err)
+	}
+
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(context.Background())
+		}
+	}()
+
+	if err := executeBatchResults(tx.SendBatch(ctx, batch), count, "upsert prediction"); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit predictions: %w", err)
+	}
+	committed = true
+
+	return nil
+}
+
+func queuePredictionBatch(batch *pgx.Batch, predictions *models.PredictionData) (int, error) {
+	if predictions == nil {
+		return 0, errors.New("nil prediction data")
+	}
+
+	count := 0
 	for resortID, pred := range predictions.Resorts {
 		predJSON, err := json.Marshal(pred)
 		if err != nil {
-			return fmt.Errorf("marshal prediction for %s: %w", resortID, err)
+			return 0, fmt.Errorf("marshal prediction for %s: %w", resortID, err)
 		}
 		batch.Queue(
 			`INSERT INTO predictions (resort_id, prediction_data, generated_at)
@@ -90,16 +146,8 @@ func (r *PredictionRepository) SavePredictions(ctx context.Context, predictions 
 			     generated_at = EXCLUDED.generated_at`,
 			resortID, predJSON, predictions.GeneratedAt,
 		)
+		count++
 	}
 
-	results := r.db.SendBatch(ctx, batch)
-	for range predictions.Resorts {
-		if _, err := results.Exec(); err != nil {
-			results.Close()
-			return fmt.Errorf("upsert prediction: %w", err)
-		}
-	}
-	results.Close()
-
-	return nil
+	return count, nil
 }

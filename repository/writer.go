@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -33,6 +34,16 @@ func (r *WriterRepository) SaveResort(ctx context.Context, resort *models.Resort
 		resort.ID = uuid.New().String()
 	}
 
+	persistedRecord, err := r.resolveResortRecord(ctx, resort)
+	if err != nil {
+		return fmt.Errorf("resolve resort identity: %w", err)
+	}
+
+	if persistedRecord.ID != "" {
+		resort.ID = persistedRecord.ID
+	}
+	resort.Slug = persistedRecord.Slug
+
 	query := `
 		INSERT INTO resorts (
 			id, slug, name, prefecture, region,
@@ -53,7 +64,7 @@ func (r *WriterRepository) SaveResort(ctx context.Context, resort *models.Resort
 		RETURNING id
 	`
 
-	err := r.ReaderRepository.db.QueryRow(ctx, query,
+	err = r.ReaderRepository.db.QueryRow(ctx, query,
 		resort.ID, resort.Slug, resort.Name, resort.Prefecture, resort.Region,
 		resort.TopElevationM, resort.BaseElevationM, resort.VerticalM,
 		resort.NumCourses, resort.LongestCourseKM, resort.SteepestCourseDeg,
@@ -64,6 +75,49 @@ func (r *WriterRepository) SaveResort(ctx context.Context, resort *models.Resort
 	}
 
 	return nil
+}
+
+func (r *WriterRepository) resolveResortRecord(ctx context.Context, resort *models.Resort) (*resortIdentityRecord, error) {
+	existingBySlug, err := r.getResortIdentityRecordBySlug(ctx, resort.Slug)
+	if err != nil {
+		return nil, err
+	}
+
+	scopedSlug := scopedResortSlug(resort.Slug, resort.Prefecture, resort.Region)
+	var existingByScopedSlug *resortIdentityRecord
+	if scopedSlug != resort.Slug {
+		existingByScopedSlug, err = r.getResortIdentityRecordBySlug(ctx, scopedSlug)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return resolvePersistedResortRecord(resort, existingBySlug, existingByScopedSlug), nil
+}
+
+func (r *WriterRepository) getResortIdentityRecordBySlug(ctx context.Context, slug string) (*resortIdentityRecord, error) {
+	query := `
+		SELECT id, slug, prefecture, region
+		FROM resorts
+		WHERE slug = $1
+	`
+
+	var record resortIdentityRecord
+	err := r.ReaderRepository.db.QueryRow(ctx, query, slug).Scan(
+		&record.ID,
+		&record.Slug,
+		&record.Prefecture,
+		&record.Region,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+
+		return nil, fmt.Errorf("get resort by slug %q: %w", slug, err)
+	}
+
+	return &record, nil
 }
 
 func (r *WriterRepository) SaveSnowDepthReadings(ctx context.Context, readings []models.SnowDepthReading) error {
@@ -92,14 +146,9 @@ func (r *WriterRepository) SaveSnowDepthReadings(ctx context.Context, readings [
 		for _, reading := range chunk {
 			batch.Queue(query, reading.ResortID, reading.Date, reading.DepthCM)
 		}
-		results := r.ReaderRepository.db.SendBatch(ctx, batch)
-		for range chunk {
-			if _, err := results.Exec(); err != nil {
-				results.Close()
-				return fmt.Errorf("save reading: %w", err)
-			}
+		if err := executeBatchResults(r.ReaderRepository.db.SendBatch(ctx, batch), len(chunk), "save reading"); err != nil {
+			return err
 		}
-		results.Close()
 	}
 
 	return nil
@@ -131,8 +180,12 @@ func (r *WriterRepository) MarkFailedAttemptRetried(ctx context.Context, id stri
 		WHERE id = $1
 	`
 
-	if _, err := r.ReaderRepository.db.Exec(ctx, query, id); err != nil {
+	tag, err := r.ReaderRepository.db.Exec(ctx, query, id)
+	if err != nil {
 		return fmt.Errorf("mark failed attempt retried: %w", err)
+	}
+	if err := requireRowsAffected(tag, 1, "mark failed attempt retried"); err != nil {
+		return err
 	}
 
 	return nil
@@ -164,14 +217,9 @@ func (r *WriterRepository) SaveDailySnowfall(ctx context.Context, snowfalls []mo
 		for _, sf := range chunk {
 			batch.Queue(query, sf.ResortID, sf.Date, sf.SnowfallCM)
 		}
-		results := r.ReaderRepository.db.SendBatch(ctx, batch)
-		for range chunk {
-			if _, err := results.Exec(); err != nil {
-				results.Close()
-				return fmt.Errorf("save snowfall: %w", err)
-			}
+		if err := executeBatchResults(r.ReaderRepository.db.SendBatch(ctx, batch), len(chunk), "save snowfall"); err != nil {
+			return err
 		}
-		results.Close()
 	}
 
 	return nil

@@ -18,15 +18,18 @@ const flySocket = "/.fly/api"
 
 // Manager handles Fly.io machine lifecycle: idle timeout, running state, and shutdown.
 type Manager struct {
-	running     atomic.Bool
-	idleTimeout time.Duration
-	timerMu     sync.Mutex
-	idleTimer   *time.Timer
+	running       atomic.Bool
+	idleTimeout   time.Duration
+	timerMu       sync.Mutex
+	idleTimer     *time.Timer
+	stopMachineFn func() error
 }
 
 // New creates a lifecycle Manager with the specified idle timeout.
 func New(idleTimeout time.Duration) *Manager {
-	return &Manager{idleTimeout: idleTimeout}
+	m := &Manager{idleTimeout: idleTimeout}
+	m.stopMachineFn = m.StopMachine
+	return m
 }
 
 // IsRunning returns whether a task is currently in progress.
@@ -56,36 +59,69 @@ func (m *Manager) onIdleTimeout() {
 		return
 	}
 	slog.Info("idle timeout, stopping machine", "timeout", m.idleTimeout)
-	m.StopMachine()
+	stopMachine := m.stopMachineFn
+	if stopMachine == nil {
+		stopMachine = m.StopMachine
+	}
+	if err := stopMachine(); err != nil {
+		slog.Error("failed to stop idle machine", "error", err)
+		m.ResetIdleTimer()
+	}
+}
+
+type httpDoer interface {
+	Do(*http.Request) (*http.Response, error)
 }
 
 // StopMachine stops this Fly machine via the Machines API Unix socket.
 // Falls back to os.Exit(0) when not running on Fly.io.
-func (m *Manager) StopMachine() {
+func (m *Manager) StopMachine() error {
 	appName := os.Getenv("FLY_APP_NAME")
 	machineID := os.Getenv("FLY_MACHINE_ID")
 	if appName == "" || machineID == "" {
 		slog.Info("not on Fly.io, exiting normally")
 		os.Exit(0)
-		return
+		return nil
 	}
 
 	client := &http.Client{
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", flySocket)
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, "unix", flySocket)
 			},
 		},
 		Timeout: 10 * time.Second,
 	}
 
-	url := fmt.Sprintf("http://flaps/v1/apps/%s/machines/%s/stop", appName, machineID)
-	resp, err := client.Post(url, "application/json", nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	status, err := requestFlyMachineStop(ctx, client, appName, machineID)
 	if err != nil {
-		slog.Error("failed to stop machine, falling back to exit", "error", err)
-		os.Exit(0)
-		return
+		return fmt.Errorf("request machine stop: %w", err)
 	}
+
+	slog.Info("machine stop requested", "status", status)
+	return nil
+}
+
+func requestFlyMachineStop(ctx context.Context, client httpDoer, appName, machineID string) (string, error) {
+	url := fmt.Sprintf("http://flaps/v1/apps/%s/machines/%s/stop", appName, machineID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("build stop request: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("send stop request: %w", err)
+	}
+
 	defer resp.Body.Close()
-	slog.Info("machine stop requested", "status", resp.StatusCode)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return "", fmt.Errorf("unexpected stop status: %s", resp.Status)
+	}
+
+	return resp.Status, nil
 }
