@@ -2,35 +2,24 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
 	"github.com/amaumene/snowfinder_common/models"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // PredictionRepository provides access to prediction-related tables.
 type PredictionRepository struct {
-	db      *pgxpool.Pool
-	beginTx func(context.Context) (predictionTx, error)
-}
-
-type predictionTx interface {
-	SendBatch(context.Context, *pgx.Batch) pgx.BatchResults
-	Commit(context.Context) error
-	Rollback(context.Context) error
+	db *sql.DB
 }
 
 // NewPredictionRepository creates a new prediction repository.
-func NewPredictionRepository(db *pgxpool.Pool) *PredictionRepository {
+func NewPredictionRepository(db *sql.DB) *PredictionRepository {
 	return &PredictionRepository{
 		db: db,
-		beginTx: func(ctx context.Context) (predictionTx, error) {
-			return db.Begin(ctx)
-		},
 	}
 }
 
@@ -39,7 +28,7 @@ func (r *PredictionRepository) LoadPredictionConfig(ctx context.Context) (map[st
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	rows, err := r.db.Query(ctx, "SELECT resort_id, config_data FROM prediction_config")
+	rows, err := r.db.QueryContext(ctx, "SELECT resort_id, config_data FROM prediction_config")
 	if err != nil {
 		return nil, fmt.Errorf("query prediction_config: %w", err)
 	}
@@ -71,11 +60,11 @@ func (r *PredictionRepository) LoadGlobalParams(ctx context.Context) (models.Glo
 	defer cancel()
 
 	var paramsData []byte
-	err := r.db.QueryRow(ctx,
+	err := r.db.QueryRowContext(ctx,
 		"SELECT params_data FROM prediction_global_params WHERE id = 1",
 	).Scan(&paramsData)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) {
 			return models.GlobalParams{}, nil
 		}
 		return models.GlobalParams{}, fmt.Errorf("query global_params: %w", err)
@@ -92,62 +81,41 @@ func (r *PredictionRepository) SavePredictions(ctx context.Context, predictions 
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	batch := &pgx.Batch{}
-	count, err := queuePredictionBatch(batch, predictions)
-	if err != nil {
-		return fmt.Errorf("prepare predictions batch: %w", err)
+	if predictions == nil {
+		return errors.New("nil prediction data")
 	}
-	if count == 0 {
+	if len(predictions.Resorts) == 0 {
 		return nil
 	}
-	if r.beginTx == nil {
-		return fmt.Errorf("begin prediction transaction: repository not initialized")
+	if _, err := time.Parse(time.RFC3339, predictions.GeneratedAt); err != nil {
+		return fmt.Errorf("invalid generated_at %q: %w", predictions.GeneratedAt, err)
 	}
 
-	tx, err := r.beginTx(ctx)
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin prediction transaction: %w", err)
 	}
+	defer tx.Rollback() //nolint:errcheck
 
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(context.Background())
-		}
-	}()
+	query := `INSERT INTO predictions (resort_id, prediction_data, generated_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT (resort_id) DO UPDATE
+		SET prediction_data = EXCLUDED.prediction_data,
+		    generated_at = EXCLUDED.generated_at`
 
-	if err := executeBatchResults(tx.SendBatch(ctx, batch), count, "upsert prediction"); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit predictions: %w", err)
-	}
-	committed = true
-
-	return nil
-}
-
-func queuePredictionBatch(batch *pgx.Batch, predictions *models.PredictionData) (int, error) {
-	if predictions == nil {
-		return 0, errors.New("nil prediction data")
-	}
-
-	count := 0
 	for resortID, pred := range predictions.Resorts {
 		predJSON, err := json.Marshal(pred)
 		if err != nil {
-			return 0, fmt.Errorf("marshal prediction for %s: %w", resortID, err)
+			return fmt.Errorf("marshal prediction for %s: %w", resortID, err)
 		}
-		batch.Queue(
-			`INSERT INTO predictions (resort_id, prediction_data, generated_at)
-			 VALUES ($1, $2, $3)
-			 ON CONFLICT (resort_id) DO UPDATE
-			 SET prediction_data = EXCLUDED.prediction_data,
-			     generated_at = EXCLUDED.generated_at`,
-			resortID, predJSON, predictions.GeneratedAt,
-		)
-		count++
+		if _, err := tx.ExecContext(ctx, query, resortID, predJSON, predictions.GeneratedAt); err != nil {
+			return fmt.Errorf("saving prediction for resort %s: %w", resortID, err)
+		}
 	}
 
-	return count, nil
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit predictions: %w", err)
+	}
+
+	return nil
 }

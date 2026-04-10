@@ -2,8 +2,7 @@
 
 deps:
 	rm -f go.mod go.sum
-	go mod init github.com/amaumene/snowfinder_scraper
-	go mod edit -replace github.com/amaumene/snowfinder_common=../snowfinder_common_go
+	go mod init github.com/amaumene/snowfinder_common
 	go mod tidy
 
 test:

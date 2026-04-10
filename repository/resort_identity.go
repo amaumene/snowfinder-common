@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/amaumene/snowfinder_common/models"
@@ -9,6 +10,7 @@ import (
 type resortIdentityRecord struct {
 	ID         string
 	Slug       string
+	Name       string
 	Prefecture string
 	Region     string
 }
@@ -30,6 +32,7 @@ func resortIdentityFromModel(resort *models.Resort) *resortIdentityRecord {
 	return &resortIdentityRecord{
 		ID:         resort.ID,
 		Slug:       resort.Slug,
+		Name:       resort.Name,
 		Prefecture: resort.Prefecture,
 		Region:     resort.Region,
 	}
@@ -64,9 +67,28 @@ func resolvePersistedResortRecord(resort *models.Resort, existingBySlug, existin
 		return &resortIdentityRecord{ID: existingByScopedSlug.ID, Slug: existingByScopedSlug.Slug}
 	}
 
+	if existingBySlug != nil && existingByScopedSlug != nil {
+		return nil
+	}
+
 	if existingBySlug != nil {
 		return &resortIdentityRecord{Slug: scopedResortSlug(resort.Slug, resort.Prefecture, resort.Region)}
 	}
 
 	return &resortIdentityRecord{Slug: resort.Slug}
+}
+
+func resolvePersistedResortRecordOrError(resort *models.Resort, existingBySlug, existingByScopedSlug *resortIdentityRecord) (*resortIdentityRecord, error) {
+	record := resolvePersistedResortRecord(resort, existingBySlug, existingByScopedSlug)
+	if record != nil {
+		return record, nil
+	}
+
+	return nil, fmt.Errorf(
+		"slug collision: cannot disambiguate %q for resort %q (prefecture %q) from existing resort %q",
+		resort.Slug,
+		resort.Name,
+		resort.Prefecture,
+		existingBySlug.Name,
+	)
 }

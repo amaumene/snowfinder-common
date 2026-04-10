@@ -4,57 +4,89 @@ package lifecycle
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 )
+
+// ErrNotOnFly is returned by StopMachine when the process is not running on Fly.io
+// (i.e. FLY_APP_NAME or FLY_MACHINE_ID environment variables are not set).
+var ErrNotOnFly = errors.New("not running on Fly.io")
 
 const flySocket = "/.fly/api"
 
 // Manager handles Fly.io machine lifecycle: idle timeout, running state, and shutdown.
 type Manager struct {
-	running       atomic.Bool
+	stateMu       sync.Mutex
+	running       bool
 	idleTimeout   time.Duration
-	timerMu       sync.Mutex
 	idleTimer     *time.Timer
+	timerVersion  uint64
 	stopMachineFn func() error
 }
 
 // New creates a lifecycle Manager with the specified idle timeout.
-func New(idleTimeout time.Duration) *Manager {
+func New(idleTimeout time.Duration) (*Manager, error) {
+	if idleTimeout <= 0 {
+		return nil, fmt.Errorf("idle timeout must be positive: %s", idleTimeout)
+	}
+
 	m := &Manager{idleTimeout: idleTimeout}
 	m.stopMachineFn = m.StopMachine
-	return m
+	return m, nil
 }
 
 // IsRunning returns whether a task is currently in progress.
 func (m *Manager) IsRunning() bool {
-	return m.running.Load()
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	return m.running
 }
 
 // SetRunning sets the running state.
 func (m *Manager) SetRunning(v bool) {
-	m.running.Store(v)
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	m.running = v
 }
 
 // ResetIdleTimer (re)starts the idle timeout. Call from the /run handler
 // and at server startup.
 func (m *Manager) ResetIdleTimer() {
-	m.timerMu.Lock()
-	defer m.timerMu.Unlock()
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	m.timerVersion++
+	version := m.timerVersion
 	if m.idleTimer != nil {
 		m.idleTimer.Stop()
 	}
-	m.idleTimer = time.AfterFunc(m.idleTimeout, m.onIdleTimeout)
+	m.idleTimer = time.AfterFunc(m.idleTimeout, func() {
+		m.onIdleTimeout(version)
+	})
 }
 
-func (m *Manager) onIdleTimeout() {
-	if m.IsRunning() {
+func (m *Manager) onIdleTimeout(version uint64) {
+	m.stateMu.Lock()
+	if version != m.timerVersion || m.idleTimer == nil {
+		m.stateMu.Unlock()
+		return
+	}
+
+	running := m.running
+	if !running {
+		m.idleTimer = nil
+	}
+	m.stateMu.Unlock()
+
+	if running {
 		m.ResetIdleTimer()
 		return
 	}
@@ -64,8 +96,25 @@ func (m *Manager) onIdleTimeout() {
 		stopMachine = m.StopMachine
 	}
 	if err := stopMachine(); err != nil {
+		if errors.Is(err, ErrNotOnFly) {
+			slog.Info("not on Fly.io, idle timeout handler returning")
+			return
+		}
 		slog.Error("failed to stop idle machine", "error", err)
 		m.ResetIdleTimer()
+	}
+}
+
+// Stop stops idle timeout handling and marks the manager as not running.
+func (m *Manager) Stop() {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+
+	m.running = false
+	m.timerVersion++
+	if m.idleTimer != nil {
+		m.idleTimer.Stop()
+		m.idleTimer = nil
 	}
 }
 
@@ -74,14 +123,13 @@ type httpDoer interface {
 }
 
 // StopMachine stops this Fly machine via the Machines API Unix socket.
-// Falls back to os.Exit(0) when not running on Fly.io.
+// Returns ErrNotOnFly when not running on Fly.io (FLY_APP_NAME or FLY_MACHINE_ID unset).
 func (m *Manager) StopMachine() error {
 	appName := os.Getenv("FLY_APP_NAME")
 	machineID := os.Getenv("FLY_MACHINE_ID")
 	if appName == "" || machineID == "" {
-		slog.Info("not on Fly.io, exiting normally")
-		os.Exit(0)
-		return nil
+		slog.Info("not on Fly.io, skipping machine stop")
+		return ErrNotOnFly
 	}
 
 	client := &http.Client{

@@ -2,6 +2,7 @@ package models
 
 // PredictionData holds the full predictions output.
 type PredictionData struct {
+	// GeneratedAt is the RFC3339 timestamp when the predictions were generated.
 	GeneratedAt  string                `json:"generated_at"`
 	Source       string                `json:"source"`
 	ForecastDays int                   `json:"forecast_days"`
@@ -31,6 +32,7 @@ type Prediction struct {
 
 // DailyForecast holds one day of forecast data.
 type DailyForecast struct {
+	// Date is formatted as "YYYY-MM-DD".
 	Date              string  `json:"date"`
 	SnowfallCM        float64 `json:"snowfall_cm"`
 	TempMax           float64 `json:"temp_max"`

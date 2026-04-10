@@ -1,5 +1,7 @@
 package models
 
+import "encoding/json"
+
 // PredictorResortConfig is the per-resort configuration loaded from
 // the prediction_config table's config_data JSONB column.
 type PredictorResortConfig struct {
@@ -46,5 +48,5 @@ type SWREntry struct {
 type PredictorConfig struct {
 	Resorts        map[string]PredictorResortConfig `json:"resorts"`
 	GlobalParams   GlobalParams                     `json:"global_params"`
-	JMAOfficeCodes any                              `json:"jma_office_codes,omitempty"`
+	JMAOfficeCodes json.RawMessage                  `json:"jma_office_codes,omitempty"`
 }

@@ -2,6 +2,7 @@ package models
 
 import "time"
 
+// Resort represents a ski resort with its physical characteristics.
 type Resort struct {
 	ID                string    `json:"id"`
 	Slug              string    `json:"slug"`
@@ -17,18 +18,22 @@ type Resort struct {
 	LastUpdated       time.Time `json:"last_updated"`
 }
 
+// SnowDepthReading is a point-in-time snow depth measurement at a resort.
 type SnowDepthReading struct {
 	ResortID string    `json:"resort_id"`
 	Date     time.Time `json:"date"`
 	DepthCM  int       `json:"depth_cm"`
 }
 
+// DailySnowfall records the total snowfall in centimetres for a single day at a resort.
 type DailySnowfall struct {
 	ResortID   string    `json:"resort_id"`
 	Date       time.Time `json:"date"`
 	SnowfallCM int       `json:"snowfall_cm"`
 }
 
+// WeeklyResortStats aggregates average snowfall statistics for a resort over a
+// calendar date range, used by the "snowiest resorts" query.
 type WeeklyResortStats struct {
 	ResortID        string   `json:"resort_id"`
 	Name            string   `json:"name"`
@@ -42,6 +47,8 @@ type WeeklyResortStats struct {
 	LongestCourseKM *float64 `json:"longest_course_km"`
 }
 
+// PeakPeriod describes a historically significant snowfall peak window for a resort.
+// StartDate, EndDate, and CenterDate are formatted as "MM-DD".
 type PeakPeriod struct {
 	ID                  string    `json:"id"`
 	ResortID            string    `json:"resort_id"`
@@ -57,11 +64,13 @@ type PeakPeriod struct {
 	CalculatedAt        time.Time `json:"calculated_at"`
 }
 
+// ResortWithPeaks bundles a Resort with its associated PeakPeriods.
 type ResortWithPeaks struct {
 	Resort Resort       `json:"resort"`
 	Peaks  []PeakPeriod `json:"peaks"`
 }
 
+// FailedScrapeAttempt records a scrape that failed and whether it has been retried.
 type FailedScrapeAttempt struct {
 	ID           string     `json:"id"`
 	ResortURL    string     `json:"resort_url"`

@@ -2,28 +2,31 @@ package repository
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
 	"github.com/amaumene/snowfinder_common/models"
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ReaderRepository provides read-only database access.
 type ReaderRepository struct {
-	db *pgxpool.Pool
+	db *sql.DB
 }
 
 // NewReader creates a new read-only repository.
-func NewReader(db *pgxpool.Pool) *ReaderRepository {
+func NewReader(db *sql.DB) *ReaderRepository {
 	return &ReaderRepository{db: db}
 }
 
 // doyToMMDD converts a day-of-year integer (1-366) to "MM-DD" string.
-func doyToMMDD(doy int) string {
+// Returns an error if doy is outside the valid range [1, 366].
+func doyToMMDD(doy int) (string, error) {
+	if doy < 1 || doy > 366 {
+		return "", fmt.Errorf("day-of-year %d out of range [1, 366]", doy)
+	}
 	t := time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, doy-1)
-	return t.Format("01-02")
+	return t.Format("01-02"), nil
 }
 
 // mmddToDOY converts an "MM-DD" string to a day-of-year integer.
@@ -37,60 +40,58 @@ func mmddToDOY(mmdd string) (int, error) {
 	return t.YearDay(), nil
 }
 
+// getResort is the shared implementation for fetching a single resort row.
+// whereClause must be a hardcoded column predicate (e.g. "slug = ?" or "id = ?");
+// arg is the corresponding bind value.
+func (r *ReaderRepository) getResort(ctx context.Context, whereClause string, arg any) (*models.Resort, error) {
+	query := fmt.Sprintf(`
+		SELECT id, slug, name, prefecture, region,
+			   top_elevation_m, base_elevation_m, vertical_m,
+			   num_courses, longest_course_km, steepest_course_deg,
+			   last_updated
+		FROM resorts
+		WHERE %s
+	`, whereClause)
+
+	var resort models.Resort
+	err := r.db.QueryRowContext(ctx, query, arg).Scan(
+		&resort.ID, &resort.Slug, &resort.Name, &resort.Prefecture, &resort.Region,
+		&resort.TopElevationM, &resort.BaseElevationM, &resort.VerticalM,
+		&resort.NumCourses, &resort.LongestCourseKM, &resort.SteepestCourseDeg,
+		&resort.LastUpdated,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &resort, nil
+}
+
+// GetResortBySlug returns the resort with the given URL slug.
+// Returns sql.ErrNoRows (wrapped) if no matching resort exists.
 func (r *ReaderRepository) GetResortBySlug(ctx context.Context, slug string) (*models.Resort, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	query := `
-		SELECT id, slug, name, prefecture, region,
-			   top_elevation_m, base_elevation_m, vertical_m,
-			   num_courses, longest_course_km, steepest_course_deg,
-			   last_updated
-		FROM resorts
-		WHERE slug = $1
-	`
-
-	var resort models.Resort
-	err := r.db.QueryRow(ctx, query, slug).Scan(
-		&resort.ID, &resort.Slug, &resort.Name, &resort.Prefecture, &resort.Region,
-		&resort.TopElevationM, &resort.BaseElevationM, &resort.VerticalM,
-		&resort.NumCourses, &resort.LongestCourseKM, &resort.SteepestCourseDeg,
-		&resort.LastUpdated,
-	)
-
+	// SAFETY: whereClause is hardcoded, not user-supplied
+	resort, err := r.getResort(ctx, "slug = ?", slug)
 	if err != nil {
-		return nil, fmt.Errorf("get resort: %w", err)
+		return nil, fmt.Errorf("get resort by slug: %w", err)
 	}
-
-	return &resort, nil
+	return resort, nil
 }
 
+// GetResortByID returns the resort with the given UUID.
+// Returns sql.ErrNoRows (wrapped) if no matching resort exists.
 func (r *ReaderRepository) GetResortByID(ctx context.Context, id string) (*models.Resort, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	query := `
-		SELECT id, slug, name, prefecture, region,
-			   top_elevation_m, base_elevation_m, vertical_m,
-			   num_courses, longest_course_km, steepest_course_deg,
-			   last_updated
-		FROM resorts
-		WHERE id = $1
-	`
-
-	var resort models.Resort
-	err := r.db.QueryRow(ctx, query, id).Scan(
-		&resort.ID, &resort.Slug, &resort.Name, &resort.Prefecture, &resort.Region,
-		&resort.TopElevationM, &resort.BaseElevationM, &resort.VerticalM,
-		&resort.NumCourses, &resort.LongestCourseKM, &resort.SteepestCourseDeg,
-		&resort.LastUpdated,
-	)
-
+	// SAFETY: whereClause is hardcoded, not user-supplied
+	resort, err := r.getResort(ctx, "id = ?", id)
 	if err != nil {
 		return nil, fmt.Errorf("get resort by id: %w", err)
 	}
-
-	return &resort, nil
+	return resort, nil
 }
 
 // GetSnowiestResorts queries snowiest resorts for a date range with optional prefecture filter.
@@ -99,7 +100,12 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive: %d", limit)
+	}
+
 	var startDOY, endDOY int
+	var startMonth int
 
 	if endDate == "" {
 		// Week mode: startDate is "YYYY-MM-DD"
@@ -107,12 +113,23 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 		if err != nil {
 			return nil, fmt.Errorf("parse start date: %w", err)
 		}
+		startTime = time.Date(2000, startTime.Month(), startTime.Day(), 0, 0, 0, 0, time.UTC)
 		startDOY = startTime.YearDay()
 		endTime := startTime.AddDate(0, 0, 6)
 		endDOY = endTime.YearDay()
+		startMonth = int(startTime.Month())
 	} else {
 		// Date range mode: both are "MM-DD"
 		var err error
+		var startTime time.Time
+		startTime, err = time.Parse("01-02", startDate)
+		if err != nil {
+			return nil, fmt.Errorf("parse start date: %w", err)
+		}
+		_, err = time.Parse("01-02", endDate)
+		if err != nil {
+			return nil, fmt.Errorf("parse end date: %w", err)
+		}
 		startDOY, err = mmddToDOY(startDate)
 		if err != nil {
 			return nil, fmt.Errorf("parse start date: %w", err)
@@ -121,14 +138,17 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 		if err != nil {
 			return nil, fmt.Errorf("parse end date: %w", err)
 		}
+		startMonth = int(startTime.Month())
 	}
 
 	var dateFilter string
+	groupYearExpr := "CAST(strftime('%Y', substr(date, 1, 19)) AS INTEGER)"
 	if startDOY <= endDOY {
-		dateFilter = "EXTRACT(DOY FROM date) >= $1 AND EXTRACT(DOY FROM date) <= $2"
+		dateFilter = "CAST(strftime('%j', substr(date, 1, 19)) AS INTEGER) >= ? AND CAST(strftime('%j', substr(date, 1, 19)) AS INTEGER) <= ?"
 	} else {
 		// Cross-year boundary (e.g., Dec 15 to Jan 15)
-		dateFilter = "(EXTRACT(DOY FROM date) >= $1 OR EXTRACT(DOY FROM date) <= $2)"
+		dateFilter = "(CAST(strftime('%j', substr(date, 1, 19)) AS INTEGER) >= ? OR CAST(strftime('%j', substr(date, 1, 19)) AS INTEGER) <= ?)"
+		groupYearExpr = fmt.Sprintf("CASE WHEN CAST(strftime('%%m', substr(date, 1, 19)) AS INTEGER) >= %d THEN CAST(strftime('%%Y', substr(date, 1, 19)) AS INTEGER) ELSE CAST(strftime('%%Y', substr(date, 1, 19)) AS INTEGER) - 1 END", startMonth)
 	}
 
 	args := []any{startDOY, endDOY}
@@ -137,18 +157,18 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 	prefectureClause := ""
 	if prefecture != "" {
 		args = append(args, prefecture)
-		prefectureClause = fmt.Sprintf("AND r.prefecture = $%d", len(args))
+		prefectureClause = "AND r.prefecture = ?"
 	}
 
 	// LIMIT is always the last parameter
 	args = append(args, limit)
-	limitParam := fmt.Sprintf("$%d", len(args))
 
+	// SAFETY: dateFilter and prefectureClause are hardcoded, not user-supplied
 	query := fmt.Sprintf(`
 		WITH range_data AS (
 			SELECT
 				resort_id,
-				EXTRACT(YEAR FROM date) as year,
+				%s as year,
 				SUM(snowfall_cm) as total_snowfall
 			FROM daily_snowfall
 			WHERE %s
@@ -166,7 +186,7 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 			r.id,
 			r.name,
 			r.prefecture,
-			ROUND(ard.avg_snowfall)::int as avg_snowfall,
+			CAST(ROUND(ard.avg_snowfall) AS INTEGER) as avg_snowfall,
 			ard.years_with_data,
 			r.top_elevation_m,
 			r.base_elevation_m,
@@ -178,10 +198,10 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 		WHERE ard.years_with_data >= 1
 		%s
 		ORDER BY ard.avg_snowfall DESC
-		LIMIT %s
-	`, dateFilter, prefectureClause, limitParam)
+		LIMIT ?
+	`, groupYearExpr, dateFilter, prefectureClause)
 
-	rows, err := r.db.Query(ctx, query, args...)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query snowiest resorts: %w", err)
 	}
@@ -190,8 +210,8 @@ func (r *ReaderRepository) GetSnowiestResorts(ctx context.Context, startDate, en
 	return scanWeeklyResortStats(rows)
 }
 
-// scanWeeklyResortStats scans pgx rows into a slice of WeeklyResortStats.
-func scanWeeklyResortStats(rows pgx.Rows) ([]models.WeeklyResortStats, error) {
+// scanWeeklyResortStats scans sql rows into a slice of WeeklyResortStats.
+func scanWeeklyResortStats(rows *sql.Rows) ([]models.WeeklyResortStats, error) {
 	results := []models.WeeklyResortStats{}
 	for rows.Next() {
 		var stat models.WeeklyResortStats
@@ -207,6 +227,9 @@ func scanWeeklyResortStats(rows pgx.Rows) ([]models.WeeklyResortStats, error) {
 	return results, nil
 }
 
+// GetAllResortsWithPeaks returns all resorts that have at least one peak period,
+// with their associated peak periods pre-loaded. Results are ordered by prefecture,
+// resort name, and peak rank.
 func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models.ResortWithPeaks, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -225,7 +248,7 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 		ORDER BY r.prefecture, r.name, p.peak_rank
 	`
 
-	rows, err := r.db.Query(ctx, query)
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query resorts with peaks: %w", err)
 	}
@@ -250,9 +273,19 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 			return nil, fmt.Errorf("scan resort with peak: %w", err)
 		}
 
-		peak.StartDate = doyToMMDD(startDOY)
-		peak.EndDate = doyToMMDD(endDOY)
-		peak.CenterDate = doyToMMDD(centerDOY)
+		var convErr error
+		peak.StartDate, convErr = doyToMMDD(startDOY)
+		if convErr != nil {
+			return nil, fmt.Errorf("convert start_doy: %w", convErr)
+		}
+		peak.EndDate, convErr = doyToMMDD(endDOY)
+		if convErr != nil {
+			return nil, fmt.Errorf("convert end_doy: %w", convErr)
+		}
+		peak.CenterDate, convErr = doyToMMDD(centerDOY)
+		if convErr != nil {
+			return nil, fmt.Errorf("convert center_doy: %w", convErr)
+		}
 		peak.ResortID = resort.ID
 
 		if _, exists := resortMap[resort.ID]; !exists {
@@ -276,6 +309,8 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 	return results, nil
 }
 
+// GetPendingFailedScrapeAttempts returns all failed scrape attempts that have not
+// yet been retried, ordered by failure time ascending.
 func (r *ReaderRepository) GetPendingFailedScrapeAttempts(ctx context.Context) ([]models.FailedScrapeAttempt, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -287,7 +322,7 @@ func (r *ReaderRepository) GetPendingFailedScrapeAttempts(ctx context.Context) (
 		ORDER BY failed_at ASC
 	`
 
-	rows, err := r.db.Query(ctx, query)
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query failed scrape attempts: %w", err)
 	}
@@ -308,6 +343,8 @@ func (r *ReaderRepository) GetPendingFailedScrapeAttempts(ctx context.Context) (
 	return attempts, nil
 }
 
+// GetPeakPeriodsForResort returns all peak periods for the given resort,
+// ordered by peak rank ascending.
 func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID string) ([]models.PeakPeriod, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
@@ -317,11 +354,11 @@ func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID
 			   avg_daily_snowfall, total_period_snowfall, prominence_score,
 			   years_of_data, confidence_level, calculated_at
 		FROM resort_peak_periods
-		WHERE resort_id = $1
+		WHERE resort_id = ?
 		ORDER BY peak_rank
 	`
 
-	rows, err := r.db.Query(ctx, query, resortID)
+	rows, err := r.db.QueryContext(ctx, query, resortID)
 	if err != nil {
 		return nil, fmt.Errorf("query peak periods: %w", err)
 	}
@@ -338,9 +375,19 @@ func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID
 		); err != nil {
 			return nil, fmt.Errorf("scan peak period: %w", err)
 		}
-		peak.StartDate = doyToMMDD(startDOY)
-		peak.EndDate = doyToMMDD(endDOY)
-		peak.CenterDate = doyToMMDD(centerDOY)
+		var convErr error
+		peak.StartDate, convErr = doyToMMDD(startDOY)
+		if convErr != nil {
+			return nil, fmt.Errorf("convert start_doy: %w", convErr)
+		}
+		peak.EndDate, convErr = doyToMMDD(endDOY)
+		if convErr != nil {
+			return nil, fmt.Errorf("convert end_doy: %w", convErr)
+		}
+		peak.CenterDate, convErr = doyToMMDD(centerDOY)
+		if convErr != nil {
+			return nil, fmt.Errorf("convert center_doy: %w", convErr)
+		}
 		peaks = append(peaks, peak)
 	}
 	if err := rows.Err(); err != nil {

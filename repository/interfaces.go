@@ -11,6 +11,9 @@ import (
 type Reader interface {
 	GetResortBySlug(ctx context.Context, slug string) (*models.Resort, error)
 	GetResortByID(ctx context.Context, id string) (*models.Resort, error)
+	// GetSnowiestResorts supports two input modes:
+	//   - weekly mode when endDate == "": startDate must be YYYY-MM-DD and the query covers 7 days
+	//   - seasonal range mode when endDate != "": startDate and endDate must both be MM-DD
 	GetSnowiestResorts(ctx context.Context, startDate, endDate, prefecture string, limit int) ([]models.WeeklyResortStats, error)
 	GetAllResortsWithPeaks(ctx context.Context) ([]models.ResortWithPeaks, error)
 	GetPeakPeriodsForResort(ctx context.Context, resortID string) ([]models.PeakPeriod, error)
