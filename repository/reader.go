@@ -242,7 +242,9 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 			   r.last_updated,
 			   p.id, p.peak_rank, p.start_doy, p.end_doy, p.center_doy,
 			   p.avg_daily_snowfall, p.total_period_snowfall, p.prominence_score,
-			   p.years_of_data, p.confidence_level, p.calculated_at
+			   p.years_of_data, p.confidence_level, p.reliability_score,
+			   p.winters_present, p.total_winters, p.regional_consistency,
+			   p.calculated_at
 		FROM resorts r
 		INNER JOIN resort_peak_periods p ON r.id = p.resort_id
 		ORDER BY r.prefecture, r.name, p.peak_rank
@@ -268,7 +270,9 @@ func (r *ReaderRepository) GetAllResortsWithPeaks(ctx context.Context) ([]models
 			&resort.LastUpdated,
 			&peak.ID, &peak.PeakRank, &startDOY, &endDOY, &centerDOY,
 			&peak.AvgDailySnowfall, &peak.TotalPeriodSnowfall, &peak.ProminenceScore,
-			&peak.YearsOfData, &peak.ConfidenceLevel, &peak.CalculatedAt,
+			&peak.YearsOfData, &peak.ConfidenceLevel, &peak.ReliabilityScore,
+			&peak.WintersPresent, &peak.TotalWinters, &peak.RegionalConsistency,
+			&peak.CalculatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan resort with peak: %w", err)
 		}
@@ -352,7 +356,9 @@ func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID
 	query := `
 		SELECT id, resort_id, peak_rank, start_doy, end_doy, center_doy,
 			   avg_daily_snowfall, total_period_snowfall, prominence_score,
-			   years_of_data, confidence_level, calculated_at
+			   years_of_data, confidence_level, reliability_score,
+			   winters_present, total_winters, regional_consistency,
+			   calculated_at
 		FROM resort_peak_periods
 		WHERE resort_id = ?
 		ORDER BY peak_rank
@@ -371,7 +377,9 @@ func (r *ReaderRepository) GetPeakPeriodsForResort(ctx context.Context, resortID
 		if err := rows.Scan(
 			&peak.ID, &peak.ResortID, &peak.PeakRank, &startDOY, &endDOY, &centerDOY,
 			&peak.AvgDailySnowfall, &peak.TotalPeriodSnowfall, &peak.ProminenceScore,
-			&peak.YearsOfData, &peak.ConfidenceLevel, &peak.CalculatedAt,
+			&peak.YearsOfData, &peak.ConfidenceLevel, &peak.ReliabilityScore,
+			&peak.WintersPresent, &peak.TotalWinters, &peak.RegionalConsistency,
+			&peak.CalculatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan peak period: %w", err)
 		}

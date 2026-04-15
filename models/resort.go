@@ -49,6 +49,7 @@ type WeeklyResortStats struct {
 
 // PeakPeriod describes a historically significant snowfall peak window for a resort.
 // StartDate, EndDate, and CenterDate are formatted as "MM-DD".
+// ConfidenceLevel is a display label derived from the underlying reliability fields.
 type PeakPeriod struct {
 	ID                  string    `json:"id"`
 	ResortID            string    `json:"resort_id"`
@@ -61,6 +62,10 @@ type PeakPeriod struct {
 	ProminenceScore     float64   `json:"prominence_score"`
 	YearsOfData         int       `json:"years_of_data"`
 	ConfidenceLevel     string    `json:"confidence_level"`
+	ReliabilityScore    float64   `json:"reliability_score"`
+	WintersPresent      int       `json:"winters_present"`
+	TotalWinters        int       `json:"total_winters"`
+	RegionalConsistency float64   `json:"regional_consistency"`
 	CalculatedAt        time.Time `json:"calculated_at"`
 }
 

@@ -9,4 +9,5 @@ test:
 	go test ./...
 
 clean:
+	rm -f go.mod go.sum
 	go clean -cache -testcache
